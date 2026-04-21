@@ -36,35 +36,35 @@ type SuggestionApiItem = { type: string; preview: string };
 
 /**
  * Generic fallbacks — only shown when the model returns zero valid suggestions.
- * Never quotes transcript text (it contains "[timestamp] text" which looks broken).
+ * Never quotes transcript text (formatted as "[timestamp] text" — looks broken quoted).
  */
 function buildFallbacks(needed: number): Suggestion[] {
   if (needed <= 0) return [];
   return [
-    { id: makeId(), type: "question",      preview: "Who owns this decision and what is the deadline for resolving it?" },
-    { id: makeId(), type: "talking_point", preview: "Before committing to an approach, align on success criteria — what does a good outcome look like in 30 days?" },
-    { id: makeId(), type: "clarification", preview: "Clarify which option is the default if no decision is made today — knowing the fallback often unblocks the room." },
+    { id: makeId(), type: "question" as SuggestionType,      preview: "Who owns this decision and what is the deadline for resolving it?" },
+    { id: makeId(), type: "talking_point" as SuggestionType, preview: "Before committing to an approach, align on success criteria — what does a good outcome look like in 30 days?" },
+    { id: makeId(), type: "clarification" as SuggestionType, preview: "Clarify which option is the default if no decision is made today — knowing the fallback often unblocks the room." },
   ].slice(0, needed);
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
-  const [settings, setSettings]               = useState<AppSettings>(defaultSettings);
-  const [isRecording, setIsRecording]         = useState(false);
-  const [transcriptChunks, setTranscriptChunks] = useState<TranscriptChunk[]>([]);
+  const [settings, setSettings]                   = useState<AppSettings>(defaultSettings);
+  const [isRecording, setIsRecording]             = useState(false);
+  const [transcriptChunks, setTranscriptChunks]   = useState<TranscriptChunk[]>([]);
   const [suggestionBatches, setSuggestionBatches] = useState<SuggestionBatch[]>([]);
-  const [chatMessages, setChatMessages]       = useState<ChatMessage[]>([]);
-  const [isChatLoading, setIsChatLoading]     = useState(false);
+  const [chatMessages, setChatMessages]           = useState<ChatMessage[]>([]);
+  const [isChatLoading, setIsChatLoading]         = useState(false);
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false);
-  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [suggestionError, setSuggestionError]     = useState<string | null>(null);
 
-  // Recorder refs
-  const mediaRecorderRef   = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef     = useRef<MediaStream | null>(null);
-  const stopTimeoutRef     = useRef<number | null>(null);
-  const shouldContinueRef  = useRef(false);
-  const audioChunksRef     = useRef<BlobPart[]>([]);
+  // Recorder
+  const mediaRecorderRef  = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef    = useRef<MediaStream | null>(null);
+  const stopTimeoutRef    = useRef<number | null>(null);
+  const shouldContinueRef = useRef(false);
+  const audioChunksRef    = useRef<BlobPart[]>([]);
 
   // Live refs — let async callbacks read current state without stale closures
   const transcriptRef = useRef<TranscriptChunk[]>([]);
@@ -73,7 +73,7 @@ export default function HomePage() {
   const settingsRef = useRef<AppSettings>(defaultSettings);
   settingsRef.current = settings;
 
-  // ── Load settings from localStorage ──────────────────────────────────────
+  // ── Load settings ─────────────────────────────────────────────────────────
   useEffect(() => {
     function load() {
       const raw = localStorage.getItem("twinmind-settings");
@@ -93,7 +93,7 @@ export default function HomePage() {
     };
   }, []);
 
-  // ── Derived: expanded transcript for chat context ─────────────────────────
+  // ── Expanded transcript for chat ──────────────────────────────────────────
   const expandedTranscript = useMemo(
     () =>
       transcriptChunks
@@ -104,9 +104,8 @@ export default function HomePage() {
   );
 
   // ── Generate suggestions ──────────────────────────────────────────────────
-  // Called directly from the recording cycle after each transcription.
-  // NOT called from a setInterval — that caused a race condition where two
-  // concurrent calls would fight each other and one would always get fallbacks.
+  // Called once after each transcription chunk. No setInterval — that caused
+  // a race condition where two concurrent calls produced fallbacks every time.
   async function generateSuggestions(transcriptText: string): Promise<void> {
     const { groqApiKey, liveSuggestionPrompt } = settingsRef.current;
     if (!groqApiKey || !transcriptText.trim()) return;
@@ -155,7 +154,7 @@ export default function HomePage() {
     }
   }
 
-  // Manual reload — builds transcript from current state via ref
+  // Manual reload — builds transcript from current ref
   async function handleReload(): Promise<void> {
     const { liveContextChunks } = settingsRef.current;
     const transcript = transcriptRef.current
@@ -195,7 +194,15 @@ export default function HomePage() {
     const systemPrompt =
       promptOverride?.trim() || settings.chatPrompt?.trim() || "You are a helpful meeting copilot.";
 
-    const userMsg: ChatMessage = { id: makeId(), role: "user", text: message, timestamp: nowTime() };
+    const userMsg: ChatMessage = {
+      id: makeId(),
+      role: "user",
+      text: message,
+      timestamp: nowTime(),
+    };
+
+    // nextHistory includes current user msg — route strips the last entry to
+    // avoid sending it twice (also sent as userMessage param separately).
     const nextHistory = [...chatMessages, userMsg];
     setChatMessages(nextHistory);
     setIsChatLoading(true);
@@ -218,7 +225,12 @@ export default function HomePage() {
 
       setChatMessages((prev) => [
         ...prev,
-        { id: makeId(), role: "assistant", text: data.answer ?? "", timestamp: nowTime() },
+        {
+          id: makeId(),
+          role: "assistant",
+          text: typeof data.answer === "string" ? data.answer : "",
+          timestamp: nowTime(),
+        },
       ]);
     } catch (err) {
       setChatMessages((prev) => [
@@ -276,7 +288,8 @@ export default function HomePage() {
           const newText = await transcribeBlob(blob);
 
           if (newText.trim()) {
-            // Build transcript from ref (avoids stale closure — ref always has latest state)
+            // Read from ref — avoids stale closure bug where transcriptChunks
+            // captured at recorder creation time is used instead of current.
             const { liveContextChunks } = settingsRef.current;
             const current = transcriptRef.current;
             const withNew = [...current, { id: "tmp", text: newText, timestamp: nowTime() }];
@@ -285,7 +298,7 @@ export default function HomePage() {
               .map((c) => `[${c.timestamp}] ${c.text}`)
               .join("\n");
 
-            // Generate suggestions once after transcription — no separate timer
+            // Single suggestion call per cycle — no concurrent timer calls
             await generateSuggestions(transcriptText);
           }
         } catch (err) {
@@ -297,7 +310,6 @@ export default function HomePage() {
       mediaRecorderRef.current = null;
       mediaStreamRef.current = null;
 
-      // Restart cycle if still supposed to be recording
       if (shouldContinueRef.current) {
         try {
           await startRecordingCycle();
@@ -312,9 +324,7 @@ export default function HomePage() {
 
     recorder.start();
 
-    // Stop after refreshIntervalMs — onstop fires, transcribes, generates
-    // suggestions, then restarts. This is the only suggestion trigger while
-    // recording. No setInterval needed — that caused race conditions.
+    // Stop after refreshIntervalMs → onstop fires → transcribe → suggestions → restart
     stopTimeoutRef.current = window.setTimeout(() => {
       if (recorder.state !== "inactive") recorder.stop();
     }, settingsRef.current.refreshIntervalMs);
@@ -325,14 +335,12 @@ export default function HomePage() {
       alert("Please add your Groq API key in Settings first.");
       return;
     }
-
     if (isRecording) {
       shouldContinueRef.current = false;
       setIsRecording(false);
       clearRecorder();
       return;
     }
-
     try {
       shouldContinueRef.current = true;
       await startRecordingCycle();
@@ -400,7 +408,6 @@ export default function HomePage() {
           onToggleRecording={toggleRecording}
           onManualRefresh={handleReload}
         />
-
         <SuggestionsPanel
           suggestionBatches={suggestionBatches}
           onSuggestionClick={(msg) => askChat(msg, settings.detailedAnswerPrompt)}
@@ -409,7 +416,6 @@ export default function HomePage() {
           error={suggestionError}
           refreshIntervalMs={settings.refreshIntervalMs}
         />
-
         <ChatPanel
           chatMessages={chatMessages}
           onSend={(msg) => askChat(msg, settings.chatPrompt)}
